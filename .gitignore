@@ -1,0 +1,23 @@
+# Go build output
+*.exe
+*.test
+*.out
+/bin/
+/dist/
+
+# Go workspace
+go.work
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Env / secrets
+.env

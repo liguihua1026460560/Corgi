@@ -1,0 +1,1 @@
+go build -o aio_channel_bench ./cmd/aio_channel_bench

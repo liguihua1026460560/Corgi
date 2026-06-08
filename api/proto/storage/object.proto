@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package macrosan.storage;
+
+option go_package = "mossserver/internal/com/macrosan/message/pb;pb";
+
+message PutInitRequest {
+  string lun = 1;
+  string file_name = 2;
+  string meta_key = 3;
+  string flush_stamp = 4;
+  string last_access_stamp = 5;
+  bool no_get = 6;
+  bool replace = 7;
+  bool recover = 8;
+}
+
+message PutChunk {
+  bytes data = 1;
+}
+
+message PutResponse {
+  enum Code {
+    CODE_UNSPECIFIED = 0;
+    CONTINUE = 1;
+    SUCCESS = 2;
+    ERROR = 3;
+  }
+  Code code = 1;
+  string message = 2;
+}

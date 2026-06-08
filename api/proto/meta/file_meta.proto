@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package macrosan.meta;
+
+option go_package = "mossserver/internal/com/macrosan/message/pb;pb";
+
+message FileMeta {
+  string meta_key = 1;
+  string file_name = 2;
+  string lun = 3;
+  string etag = 4;
+  int64 size = 5;
+  repeated int64 offset = 6;
+  repeated int64 len = 7;
+  string flush_stamp = 8;
+  string last_access_stamp = 9;
+}
