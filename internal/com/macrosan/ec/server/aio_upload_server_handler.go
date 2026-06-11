@@ -98,8 +98,6 @@ func NewAioUploadServerHandler(device *fs.BlockDevice, responses chan Response) 
 }
 
 func (h *AioUploadServerHandler) Start(req *pb.PutInitRequest) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.initReq = req
 	h.pendingLen = 0
 	h.fileSize = 0
@@ -107,10 +105,6 @@ func (h *AioUploadServerHandler) Start(req *pb.PutInitRequest) {
 	h.blockInfoList = h.blockInfoList[:0]
 	h.flushErr = nil
 	h.finalized = false
-	for i := range h.chunks {
-		h.chunks[i] = nil
-	}
-	h.chunks = h.chunks[:0]
 }
 
 func (h *AioUploadServerHandler) Put(data []byte) {
@@ -118,38 +112,29 @@ func (h *AioUploadServerHandler) Put(data []byte) {
 		info *flushBlockInfo
 		buf  []byte
 	)
-
-	h.mu.Lock()
 	if h.initReq == nil {
-		h.mu.Unlock()
 		h.responses <- Response{Type: MetaError, Err: fmt.Errorf("start request is missing")}
 		return
 	}
 	if h.flushErr != nil {
 		err := h.flushErr
-		h.mu.Unlock()
 		h.responses <- Response{Type: MetaError, Err: err}
 		return
 	}
 	if h.finalized {
-		h.mu.Unlock()
 		h.responses <- Response{Type: MetaError, Err: fmt.Errorf("upload is already finalized")}
 		return
 	}
 	if len(data) == 0 {
-		h.mu.Unlock()
 		h.responses <- Response{Type: MetaContinue}
 		return
 	}
-	cp := make([]byte, len(data))
-	copy(cp, data)
-	h.chunks = append(h.chunks, cp)
-	h.pendingLen += len(cp)
-	h.fileSize += int64(len(cp))
+	h.chunks = append(h.chunks, data)
+	h.pendingLen += len(data)
+	h.fileSize += int64(len(data))
 	if h.pendingLen >= int(fs.MinAllocSize) {
-		info, buf = h.startFlushLocked()
+		info, buf = h.startFlush()
 	}
-	h.mu.Unlock()
 
 	if info != nil {
 		go h.runFlush(context.Background(), info, buf, true)
@@ -165,46 +150,39 @@ func (h *AioUploadServerHandler) Complete(ctx context.Context) {
 		buf  []byte
 	)
 
-	h.mu.Lock()
 	initReq := h.initReq
 	if initReq == nil {
-		h.mu.Unlock()
 		h.responses <- Response{Type: MetaError, Err: fmt.Errorf("start request is missing")}
 		return
 	}
 	if h.flushErr != nil {
 		flushErr := h.flushErr
 		h.finalized = true
-		h.mu.Unlock()
 		h.flushWG.Wait()
 		h.rollbackCompletedFlushes()
 		h.responses <- Response{Type: MetaError, Err: flushErr}
 		return
 	}
 	if h.finalized {
-		h.mu.Unlock()
 		h.responses <- Response{Type: MetaError, Err: fmt.Errorf("upload is already finalized")}
 		return
 	}
 	if h.fileSize == 0 {
 		h.finalized = true
-		h.mu.Unlock()
 		h.responses <- Response{Type: MetaError, Err: fmt.Errorf("empty put payload")}
 		return
 	}
 	h.finalized = true
 	if h.pendingLen != 0 {
-		info, buf = h.startFlushLocked()
+		info, buf = h.startFlush()
 	}
-	h.mu.Unlock()
-
+	
 	if info != nil {
 		go h.runFlush(ctx, info, buf, false)
 	}
-
 	h.flushWG.Wait()
 
-	h.mu.Lock()
+
 	flushErr := h.flushErr
 	fileSize := h.fileSize
 	etag := ""
@@ -212,7 +190,6 @@ func (h *AioUploadServerHandler) Complete(ctx context.Context) {
 		etag = hex.EncodeToString(h.digest.Sum(nil))
 	}
 	blockInfoList := append([]*flushBlockInfo(nil), h.blockInfoList...)
-	h.mu.Unlock()
 
 	if flushErr != nil {
 		h.rollbackCompletedFlushes()
@@ -295,7 +272,7 @@ func (h *AioUploadServerHandler) TimeOut() {
 	h.responses <- Response{Type: MetaError, Err: fmt.Errorf("channel timeout")}
 }
 
-func (h *AioUploadServerHandler) startFlushLocked() (*flushBlockInfo, []byte) {
+func (h *AioUploadServerHandler) startFlush() (*flushBlockInfo, []byte) {
 	originalLen := h.pendingLen
 	alignedLen := int(fs.AlignBlockSize(int64(originalLen)))
 	buf := fs.NewAlignedBlockBuffer(alignedLen)
@@ -382,8 +359,8 @@ func (h *AioUploadServerHandler) completeFlush(info *flushBlockInfo, results []f
 		length = append(length, r.Size)
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	// h.mu.Lock()
+	// defer h.mu.Unlock()
 	info.offset = offset
 	info.length = length
 	info.results = append([]fs.Result(nil), results...)

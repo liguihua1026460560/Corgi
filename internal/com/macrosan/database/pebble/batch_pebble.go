@@ -256,7 +256,6 @@ func (bp *BatchPebble) runProcessor(ch chan *BatchRequest) {
 				break drainLoop
 			}
 		}
-
 		// 3. 统一提交
 		bp.flush(requests)
 

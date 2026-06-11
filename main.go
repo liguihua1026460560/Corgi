@@ -3,15 +3,19 @@ package main
 import (
 	"context"
 	"log"
-	"os"
-	"time"
-
 	ecserver "mossserver/internal/com/macrosan/ec/server"
 	"mossserver/internal/com/macrosan/fs"
 	mossrsocket "mossserver/internal/com/macrosan/network/rsocket"
+	"net/http"
+	_ "net/http/pprof"
+	"os"
+	"time"
 )
 
 func main() {
+	go func() {
+		_ = http.ListenAndServe("127.0.0.1:6060", nil)
+	}()
 	//读取命令行第一个参数
 	if len(os.Args) < 2 {
 		println("Usage: mossserver <mountdir> [addr]")

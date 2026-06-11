@@ -92,7 +92,7 @@ func (c *AioChannel) completionLoop() {
 		default:
 		}
 
-		n, err := c.aio.WaitAny(completed)
+		n, err := c.aio.WaitAnyBlock(completed)
 		if err != nil {
 			// Drain all inflight requests with the error so callers unblock.
 			c.inflightMu.Lock()
