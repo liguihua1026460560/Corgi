@@ -40,6 +40,7 @@ var (
 	ErrNotFound          = errors.New("ID not found")
 	ErrNotDone           = errors.New("Request not finished")
 	ErrInvalidQueueDepth = errors.New("Invalid queue depth")
+	ErrShortWrite        = errors.New("Short write occurred, caller needs to resubmit the remaining data")
 
 	zeroTime        timespec
 	nonblockTimeout = timespec{
@@ -56,6 +57,12 @@ type activeEvent struct {
 	written uint
 	cb      *aiocb
 	id      RequestId
+	doneCh  chan<- Completion
+}
+
+type Completion struct {
+	N   int
+	Err error
 }
 
 type timespec struct {
@@ -83,6 +90,8 @@ type AIO struct {
 	avail    map[*aiocb]bool
 	requests map[RequestId]*requestState
 	reqId    RequestId
+
+	slotSem chan struct{} // 可用 iocb 槽位信号量
 }
 
 type AIOExtConfig struct {
@@ -151,6 +160,11 @@ func New(fio *os.File, cfg AIOExtConfig) (*AIO, error) {
 		}
 		availPool[cbp[i]] = true
 	}
+	slotSem := make(chan struct{}, cfg.QueueDepth)
+	for i := 0; i < cfg.QueueDepth; i++ {
+		slotSem <- struct{}{}
+	}
+
 	return &AIO{
 		f:        fio,
 		ctx:      ctx,
@@ -161,34 +175,58 @@ func New(fio *os.File, cfg AIOExtConfig) (*AIO, error) {
 		end:      end,
 		active:   make(map[*aiocb](*activeEvent), cfg.QueueDepth),
 		avail:    availPool,
-		requests: make(map[RequestId]*requestState, 8),
+		requests: make(map[RequestId]*requestState, cfg.QueueDepth),
 		reqId:    1, //ID should start counting at 1 so callers can use 0 as "not in use"
+		slotSem:  slotSem,
 	}, err
 }
 
 // Close up the aio object, waiting for all requests to finish first
 func (a *AIO) Close() error {
+	a.wmtx.Lock()
+	defer a.wmtx.Unlock()
+
 	a.dmtx.Lock()
 	if a.ctx == 0 || a.f == nil {
 		a.dmtx.Unlock()
 		return ErrNotInit
 	}
-	a.dmtx.Unlock()
-	a.wmtx.Lock()
-	defer a.wmtx.Unlock()
-	if err := a.waitAll(); err != nil {
-		return err
-	}
-	_, _, errno := syscall.Syscall(syscall.SYS_IO_DESTROY, uintptr(a.ctx), 0, 0)
+
+	ctx := a.ctx
+	f := a.f
+
+	// 先置空，防止后续误用
 	a.ctx = 0
-	if err := a.f.Close(); err != nil {
-		return err
-	}
 	a.f = nil
-	if errno == 0 {
-		return nil
+	a.dmtx.Unlock()
+
+	// 关键：不 waitAll，直接销毁 AIO context
+	_, _, errno := syscall.Syscall(syscall.SYS_IO_DESTROY, uintptr(ctx), 0, 0)
+
+	// io_destroy 返回后，再清理 Go 侧 active 状态
+	a.dmtx.Lock()
+	for cb, ae := range a.active { //理论上可以不要，因为外层已经c.aio 置空了，后续调用会直接 ErrNotInit；但为了保险起见，还是把 active 里未完成的请求都通知一下，避免上层一直等下去
+		ae.data = nil
+		delete(a.active, cb)
+		a.avail[cb] = true
+		a.releaseSlot()
+
+		// 如果你还有 doneCh，可以通知等待方关闭
+		if ae.doneCh != nil {
+			select {
+			case ae.doneCh <- Completion{N: int(ae.written), Err: errors.New("aio closed")}:
+			default:
+			}
+		}
 	}
-	return ErrDestroy
+	a.dmtx.Unlock()
+
+	closeErr := f.Close()
+
+	if errno != 0 {
+		return errLookup(errno)
+	}
+	return closeErr
 }
 
 // resubmit puts a request back into the kernel
@@ -224,6 +262,9 @@ func (a *AIO) freeEvent(ae *activeEvent, cb *aiocb, errno int) error {
 	if errno < 0 {
 		r.err = lookupErrNo(errno)
 	}
+
+	a.releaseSlot() // 释放一个 iocb 槽位，token 还回信号量
+
 	return nil
 }
 
@@ -241,6 +282,7 @@ func (a *AIO) verifyResult(evnt event, compLen *int, completed []RequestId) erro
 	if ae.cb != evnt.cb {
 		return ErrInvalidEventPtr
 	}
+
 	if evnt.res < 0 {
 		//an error occured with this event, remove the active event and set
 		//the event error code
@@ -248,12 +290,8 @@ func (a *AIO) verifyResult(evnt event, compLen *int, completed []RequestId) erro
 	}
 	//ok, we have an active event returned and its one we are tracking
 	//ensure it wrote our entire buffer.  res is > 0 at this point
-	if evnt.res > 0 && uint(len(ae.data)) != (uint(evnt.res)+ae.written) {
-		ae.written += uint(evnt.res)
-		if err := a.resubmit(ae); err != nil {
-			return err
-		}
-		return nil //chunk went back in, so don't clear anything
+	if uint(len(ae.data)) != (uint(evnt.res) + ae.written) { //短写，上游需要重新提交全部未完成的部分
+		return ErrShortWrite
 	}
 	ae.written += uint(evnt.res)
 
@@ -448,23 +486,34 @@ func (a *AIO) WaitFor(id RequestId) (int, error) {
 // getNextReady will retrieve the next available callback pointer for use
 // if no callback pointers are available, it blocks and waits for one
 func (a *AIO) getNextReady() (*aiocb, error) {
-	for {
-		a.dmtx.Lock()
-		for k, _ := range a.avail {
-			//remove the cb from the available pool
-			delete(a.avail, k)
-			a.dmtx.Unlock()
-			return k, nil
-		}
-		a.dmtx.Unlock()
-		a.wmtx.Lock()
-		_, err := a.wait(zeroTime, nil)
-		a.wmtx.Unlock()
-		if err != nil {
-			return nil, err
-		}
+
+	<-a.slotSem
+	// 拿到一个可用槽位
+
+	a.dmtx.Lock()
+	defer a.dmtx.Unlock()
+
+	for cb := range a.avail {
+		delete(a.avail, cb)
+		return cb, nil
+	}
+
+	// 理论上不应该走到这里：
+	// 拿到了 slot token，却没有 avail cb，说明 slotSem 和 avail 状态不一致。
+	// 需要把 token 还回去，避免泄漏。
+	select {
+	case a.slotSem <- struct{}{}:
+	default:
 	}
 	return nil, ErrWhatTheHell
+}
+
+func (a *AIO) releaseSlot() {
+	select {
+	case a.slotSem <- struct{}{}:
+	default:
+		// 正常不应该满；满了说明重复 release 或状态不一致
+	}
 }
 
 // Write will submit the bytes for writting at the end of the file,
@@ -507,6 +556,7 @@ func (a *AIO) writeAt(b []byte, offset int64) (RequestId, error) {
 	a.dmtx.Lock()
 	if err := a.submit(cbp); err != nil {
 		a.avail[cbp] = true
+		a.releaseSlot()
 		a.dmtx.Unlock()
 		return 0, err
 	}
@@ -524,7 +574,6 @@ func (a *AIO) writeAt(b []byte, offset int64) (RequestId, error) {
 		cbKey: cbp,
 		done:  false,
 	}
-
 	if a.end < (offset + int64(len(b))) {
 		//calculate new offset for the end of the file
 		a.end += int64(len(b))
@@ -553,6 +602,7 @@ func (a *AIO) ReadAt(b []byte, offset int64) (RequestId, error) {
 	a.dmtx.Lock()
 	if err := a.submit(cbp); err != nil {
 		a.avail[cbp] = true
+		a.releaseSlot()
 		//delete the request
 		a.dmtx.Unlock()
 		return 0, err

@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package corgi.pb;
+
+option go_package = "Corgi/internal/message/pb;pb";
+
+message PutInitRequest {
+  string lun = 1;
+  string fileName = 2;
+  string metaKey = 3;
+  bool no_get = 4;
+  bool replace = 5;
+  bool recover = 6;
+}
+
+message FileMeta {
+  string lun = 1;
+  string fileName = 2;
+  string etag = 3;
+  int64 size = 4;
+  repeated int64 offset = 5;
+  repeated int64 len = 6;
+  string metaKey = 7;
+}

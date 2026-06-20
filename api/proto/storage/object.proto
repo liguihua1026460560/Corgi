@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package macrosan.storage;
+package corgi.storage;
 
-option go_package = "mossserver/internal/com/macrosan/message/pb;pb";
+option go_package = "Corgi/internal/message/pb;pb";
 
 message PutInitRequest {
   string lun = 1;

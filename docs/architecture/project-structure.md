@@ -9,7 +9,7 @@
 
 ## 顶层目录
 
-- `cmd/mossserver`：服务启动入口（预留）
+- `cmd/corgi`：服务启动入口（预留）
 - `api/proto`：protobuf 协议定义（common/meta/storage）
 - `configs`：配置模板与环境配置（预留）
 - `deployments`：部署清单（预留）
@@ -20,14 +20,14 @@
 
 ## internal 关键分层
 
-- `internal/com/macrosan/network/rsocket`：go-rsocket 服务端接入层
-- `internal/com/macrosan/message/pb`：pb 消息封装与转换
-- `internal/com/macrosan/database/kv/pebble`：Pebble 实现（主）
-- `internal/com/macrosan/database/kv/rocksdbstub`：RocksDB 适配预留（替换位）
-- `internal/com/macrosan/database/alloc`：磁盘空间分配 alloc 与回收策略
-- `internal/com/macrosan/ec/server`：对应 Java `ec/server` 的服务处理层
-- `internal/com/macrosan/fs`：块设备与文件系统抽象
-- `internal/com/macrosan/storage`：存储池与写入路径管理
+- `internal/network/rsocket`：go-rsocket 服务端接入层
+- `internal/message/pb`：pb 消息封装与转换
+- `internal/database/kv/pebble`：Pebble 实现（主）
+- `internal/database/kv/rocksdbstub`：RocksDB 适配预留（替换位）
+- `internal/database/alloc`：磁盘空间分配 alloc 与回收策略
+- `internal/ec/server`：对应 Java `ec/server` 的服务处理层
+- `internal/fs`：块设备与文件系统抽象
+- `internal/storage`：存储池与写入路径管理
 
 ## protobuf 拆分建议
 

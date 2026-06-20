@@ -32,7 +32,7 @@ import (
 	iouring "github.com/iceber/iouring-go"
 	"golang.org/x/sys/unix"
 
-	goaio "mossserver/internal/third_party/goaio"
+	goaio "Corgi/internal/third_party/goaio"
 )
 
 // ---------- CLI flags ----------

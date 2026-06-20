@@ -1,0 +1,1 @@
+go build -o aio_upload_client ./cmd/aio_upload_client

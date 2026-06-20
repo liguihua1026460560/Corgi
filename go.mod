@@ -1,4 +1,4 @@
-module mossserver
+module Corgi
 
 go 1.25.4
 

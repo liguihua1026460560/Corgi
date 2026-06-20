@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -21,7 +22,13 @@ import (
 	rspayload "github.com/rsocket/rsocket-go/payload"
 	"github.com/rsocket/rsocket-go/rx/flux"
 
-	mossrsocket "mossserver/internal/com/macrosan/network/rsocket"
+	"crypto/rand"
+	"encoding/hex"
+	mossrsocket "Corgi/internal/network/rsocket"
+
+	"Corgi/internal/message/pb"
+
+	"google.golang.org/protobuf/proto"
 )
 
 type config struct {
@@ -40,6 +47,22 @@ type config struct {
 type counters struct {
 	uploads atomic.Uint64
 	bytes   atomic.Uint64
+}
+
+type SocketReqMsg struct {
+	Version string            `json:"version"`
+	MsgType string            `json:"msgType"`
+	MsgLen  int64             `json:"msgLen"`
+	DataMap map[string]string `json:"dataMap"`
+}
+
+func NewSocketReqMsg(msgType string, msgLen int64) SocketReqMsg {
+	return SocketReqMsg{
+		Version: "1.0",
+		MsgType: msgType,
+		MsgLen:  msgLen,
+		DataMap: make(map[string]string, 16),
+	}
 }
 
 func main() {
@@ -144,6 +167,33 @@ func runUploads(ctx context.Context, client gorsocket.Client, cfg config, stats 
 	errCh := make(chan error, 1)
 	var wg sync.WaitGroup
 
+	// 启动定时打印 IOPS 和带宽的 goroutine
+	startTime := time.Now()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				elapsed := time.Since(startTime).Seconds()
+				if elapsed <= 0 {
+					continue
+				}
+				uploads := stats.uploads.Load()
+				bytes := stats.bytes.Load()
+				iops := float64(uploads) / elapsed
+				throughput := float64(bytes) / elapsed
+				log.Printf("REALTIME: uploads=%d iops=%.2f throughput=%s/s elapsed=%.1fs",
+					uploads, iops, formatBytes(uint64(throughput)), elapsed)
+			}
+		}
+	}()
+
 	for i := 0; i < cfg.concurrency; i++ {
 		wg.Add(1)
 		go func() {
@@ -190,13 +240,14 @@ sendJobs:
 }
 
 func uploadOnce(ctx context.Context, client gorsocket.Client, cfg config, id int) error {
-	startData, err := encodeStartPayload(cfg, id)
+	startData, err := encodeStartPayloadProtoBuf(cfg, id)
 	if err != nil {
 		return err
 	}
 
 	send := flux.Create(func(ctx context.Context, sink flux.Sink) {
 		sink.Next(rspayload.New(startData, []byte(mossrsocket.StartPutObject)))
+
 		for chunk := 0; chunk < cfg.chunks; chunk++ {
 			if err := ctx.Err(); err != nil {
 				sink.Error(err)
@@ -205,11 +256,13 @@ func uploadOnce(ctx context.Context, client gorsocket.Client, cfg config, id int
 			data := makePattern(cfg.blockSize, uint64(id*cfg.chunks+chunk))
 			sink.Next(rspayload.New(data, []byte(mossrsocket.PutObject)))
 		}
+
 		sink.Next(rspayload.New(nil, []byte(mossrsocket.CompletePutObject)))
 		sink.Complete()
 	})
 
 	responses, err := client.RequestChannel(send).BlockSlice(ctx)
+
 	if err != nil {
 		return fmt.Errorf("upload %d request channel: %w", id, err)
 	}
@@ -241,12 +294,57 @@ func uploadOnce(ctx context.Context, client gorsocket.Client, cfg config, id int
 }
 
 func encodeStartPayload(cfg config, id int) ([]byte, error) {
+	uuid, err := newUUIDV4()
+	if err != nil {
+		return nil, fmt.Errorf("generate uuid: %w", err)
+	}
+
 	data := map[string]string{
 		"lun":      cfg.lun,
-		"fileName": fmt.Sprintf("%s-%d.bin", cfg.filePrefix, id),
+		"fileName": fmt.Sprintf("/9698_bk1_%s", uuid),
 		"metaKey":  fmt.Sprintf("%s-%d-%d", cfg.metaPrefix, time.Now().UnixNano(), id),
 	}
-	return json.Marshal(data)
+
+	msg := NewSocketReqMsg("", 0)
+	msg.DataMap = data
+	return json.Marshal(msg)
+}
+
+func encodeStartPayloadProtoBuf(cfg config, id int) ([]byte, error) {
+	uuid, err := newUUIDV4()
+	if err != nil {
+		return nil, fmt.Errorf("generate uuid: %w", err)
+	}
+
+	req := &pb.PutInitRequest{
+		Lun:      cfg.lun,
+		FileName: fmt.Sprintf("/9698_bk1_%s", uuid),
+		MetaKey:  fmt.Sprintf("%s-%d-%d", cfg.metaPrefix, time.Now().UnixNano(), id),
+		NoGet:    false,
+		Replace:  false,
+		Recover:  false,
+	}
+
+	data, err := proto.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal PutInitRequest: %w", err)
+	}
+
+	return data, nil
+}
+
+func encodePutAndCompletePayload(start *pb.PutInitRequest, body []byte) ([]byte, error) {
+	startBytes, err := proto.Marshal(start)
+	if err != nil {
+		return nil, fmt.Errorf("marshal PutInitRequest: %w", err)
+	}
+
+	buf := make([]byte, 8+len(startBytes)+len(body))
+	binary.LittleEndian.PutUint64(buf[:8], uint64(len(startBytes)))
+	copy(buf[8:], startBytes)
+	copy(buf[8+len(startBytes):], body)
+
+	return buf, nil
 }
 
 func makePattern(size int, seed uint64) []byte {
@@ -306,4 +404,30 @@ func formatBytes(v uint64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.2f%ciB", value/div, "KMGTPE"[exp])
+}
+
+func newUUIDV4() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+
+	// UUID version 4
+	b[6] = (b[6] & 0x0f) | 0x40
+
+	// UUID variant is 10xxxxxx
+	b[8] = (b[8] & 0x3f) | 0x80
+
+	var buf [36]byte
+	hex.Encode(buf[0:8], b[0:4])
+	buf[8] = '-'
+	hex.Encode(buf[9:13], b[4:6])
+	buf[13] = '-'
+	hex.Encode(buf[14:18], b[6:8])
+	buf[18] = '-'
+	hex.Encode(buf[19:23], b[8:10])
+	buf[23] = '-'
+	hex.Encode(buf[24:36], b[10:16])
+
+	return string(buf[:]), nil
 }

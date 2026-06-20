@@ -5,26 +5,26 @@
 ## 关键映射
 
 - Java: `com.macrosan.ec.server.ErasureServer`
-- Go: `internal/com/macrosan/ec/server/`
+- Go: `internal/ec/server/`
 
 - Java: `com.macrosan.ec.server.AioUploadServerHandler`
-- Go: `internal/com/macrosan/ec/server/`
+- Go: `internal/ec/server/`
 
 - Java: `com.macrosan.fs.BlockDevice`
-- Go: `internal/com/macrosan/fs/`
+- Go: `internal/fs/`
 
 - Java: `com.macrosan.database.rocksdb.*`
 - Go: 
-  - 主实现：`internal/com/macrosan/database/kv/pebble/`
-  - 预留替换：`internal/com/macrosan/database/kv/rocksdbstub/`
+  - 主实现：`internal/database/kv/pebble/`
+  - 预留替换：`internal/database/kv/rocksdbstub/`
 
 - Java: `com.macrosan.message.socketmsg` / `jsonmsg`
 - Go: 
   - 协议定义：`api/proto/**`
-  - 消息封装：`internal/com/macrosan/message/pb/`
+  - 消息封装：`internal/message/pb/`
 
 - Java: `com.macrosan.rsocket.server`
-- Go: `internal/com/macrosan/network/rsocket/`
+- Go: `internal/network/rsocket/`
 
 ## 迁移注意点
 

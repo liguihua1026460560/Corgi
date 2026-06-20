@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"mossserver/internal/com/macrosan/fs"
+	"Corgi/internal/fs"
 )
 
 const defaultStatsInterval = time.Second
